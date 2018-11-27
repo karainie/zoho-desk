@@ -1,0 +1,169 @@
+//Department IDs
+dispatch = 305352000000308106;
+lcl = 305352000000824044;
+billing = 305352000004984424;
+oe = 305352000000172076;
+//Dispatch teams
+team_02 = 305352000000312023;
+team_07 = 305352000000312055;
+team_08 = 305352000000312053;
+team_unk = 305352000004129223;
+team_col = {"102":team_02,"107":team_07,"108":team_08,"?":team_unk};
+thisAcct = "";
+//Store all emails here
+all_em = Collection();
+//adding the sender's email in the all email collection
+all_em.insert(tixEmail);
+//Store email and type here - use a map so you can store two values
+contact_type = Map();
+//Store all whse here
+type_whse = Collection();
+//Store all brokers here
+type_broker = Collection();
+//Store all consignee here
+type_consignee = Collection();
+//Store no type here
+type_null = Collection();
+//info zoho.support.getRecords("Requests", "blitzcloud", "Order Verification"); // sample: 305352000005635109
+// 11-15-18 4:21PM - removing the args for shiptype since this is only used by the fcl blueprint.
+// 11-22-18 5:48PM - args consigneeEmail added 
+//if(shiptype.containsIgnoreCase("FCL"))
+//{
+teamId = 0;
+for each  val in team_col
+{
+	if(team_col.containKey(dispCode))
+	{
+		teamId = team_col.get(dispCode);
+	}
+}
+//Store created tickets here
+tix_results = Collection();
+//Convert string to list
+tmp_list = tmp.toList("\n");
+//change to /n to separate each value per new line
+cntr_list = cntr.toList("\n");
+//create ticket for each tmp_list
+x = 0;
+// OK - still need to test for those n separators
+//Get all emails in the thread
+getTicket = invokeurl
+[
+	url :"https://desk.zoho.com/api/v1/tickets/" + recordID + "/threads"
+	type :GET
+	headers:{"orgId":ORGID + "","Authorization":"Zoho-authtoken " + genKey}
+];
+latestThreadID = getTicket.get("data").get(0).get("id");
+getTicketThread = invokeurl
+[
+	url :"https://desk.zoho.com/api/v1/tickets/" + recordID + "/threads/" + latestThreadID
+	type :GET
+	headers:{"orgId":ORGID + "","Authorization":"Zoho-authtoken " + genKey}
+];
+//add the recipients' emails
+em_to = ifnull(getTicketThread.get("to"),"");
+em_to_col = em_to.toCollection("<");
+for each  to_email in em_to_col
+{
+	if(to_email.toString().contains("@"))
+	{
+		to_em = to_email.subText(0,to_email.indexOf(">"));
+		if(tixEmail.toString().getOccurenceCount(to_em) <= 0 && to_em.contains("\"") == false)
+		{
+			all_em.insert(to_em.trim());
+		}
+	}
+}
+//add the cc emails
+em_cc = getTicketThread.get("cc");
+if(em_cc.len() > 0)
+{
+	em_cc_col = em_cc.toCollection("<");
+	for each  cc_email in em_cc_col
+	{
+		if(cc_email.toString().contains("@"))
+		{
+			cc_em = cc_email.subText(0,cc_email.indexOf(">"));
+			if(tixEmail.toString().getOccurenceCount(cc_em) <= 0 && cc_em.contains("\"") == false)
+			{
+				all_em.insert(cc_em.trim());
+			}
+		}
+	}
+}
+for each  recipient in all_em
+{
+	searchContactDetails = invokeurl
+	[
+		url :"https://desk.zoho.com/api/v1/contacts/search?limit=1&email=" + recipient.trim()
+		type :GET
+		headers:{"orgId":ORGID + "","Authorization":"Zoho-authtoken " + genKey}
+	];
+	rec_data = searchContactDetails.get("data");
+	if(rec_data.contains("\"type\":null") == false)
+	{
+		rec_type = rec_data.getJSON("type");
+		//info recipient+" "+rec_type; // would also display the null value
+		contact_type.put(recipient,rec_type);
+	}
+}
+//get(contact_type.toJSONList().indexOf(contactType)+1)
+for each  contactType in contact_type.keys()
+{
+	cType = contact_type.getJSON(contactType);
+	//contact_type.
+	if(cType == "Warehouse")
+	{
+		type_whse.insert(contactType);
+	}
+	else if(cType == "Consignee")
+	{
+		type_consignee.insert(contactType);
+	}
+	else if(cType == "Broker")
+	{
+		type_broker.insert(contactType);
+	}
+	else
+	{
+		type_null.insert(contactType);
+	}
+}
+//Get the consignee's contactID
+searchContactID = invokeurl
+[
+	url :"https://desk.zoho.com/api/v1/contacts/search?limit=1&email=" + consigneeEmail.trim()
+	type :GET
+	headers:{"orgId":ORGID + "","Authorization":"Zoho-authtoken " + genKey}
+];
+cons_id = searchContactID.get("data").get(0).get("id");
+acctName = searchContactID.get("data").get(0).get("account");
+if(acctName.size() > 0)
+{
+	thisAcct = acctName.getJSON("accountName");
+}
+//info thisAcct;
+//move ticket to a dept - we need a ticketId and the deparmentId.
+for each  pt in tmp_list
+{
+	tmpTix = pt;
+	cntrTix = cntr_list.get(x);
+	//info tmpTix+"-"+cntrTix;
+	tixSubj = tmpTix + " , " + cntrTix;
+	insertData = {"subject":tixSubj,"departmentId":dispatch,"email":consigneeEmail.trim(),"contactId":cons_id,"channel":"Email","teamId":teamId,"status":"TMP","customFields":{"Consignee":type_consignee.toString().trim(),"Warehouse":type_whse.toString().trim(),"Broker":type_broker.toString().trim()}};
+	// "teamId":teamId removed
+	//insert subj, deptid, teamid, email?
+	//generate new ticket 
+	createTicket = invokeurl
+	[
+		url :"https://desk.zoho.com/api/v1/tickets"
+		type :POST
+		parameters:insertData.toString()
+		headers:{"orgId":ORGID + "","Authorization":"Zoho-authtoken " + genKey,"X-HTTP-Method-Override":"POST"}
+	];
+	new_ticketID = createTicket.get("id");
+	tix_results.insert(new_ticketID);
+	x = x + 1;
+	info createTicket;
+	//info teamId;
+}
